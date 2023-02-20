@@ -26,13 +26,17 @@ def connect_to_db():
     """
     Connect to MySQL database using configuration from INI file.
     """
-    db_config = {
-        'host': config.get(DB_SECTION, 'host'),
-        'user': config.get(DB_SECTION, 'user'),
-        'password': config.get(DB_SECTION, 'password'),
-        'database': config.get(DB_SECTION, 'database')
-    }
-    return mysql.connector.connect(**db_config)
+    try:
+        db_config = {
+            'host': config.get(DB_SECTION, 'host'),
+            'user': config.get(DB_SECTION, 'user'),
+            'password': config.get(DB_SECTION, 'password'),
+            'database': config.get(DB_SECTION, 'database')
+        }
+        return mysql.connector.connect(**db_config)
+    except mysql.connector.Error as err:
+        print(f"Error connecting to mysql: {err}")
+        return None
 
 
 # Function connects mysql server and read the data from database
@@ -40,60 +44,71 @@ def get_timesheet_data(start_date, end_date):
     """
     Function connects mysql server and read the data from database
     """
-    db_connection = connect_to_db()
+    try:
+        db_connection = connect_to_db()
+        query = f"SELECT concat(UD.first_name,' ' ,UD.last_name) " \
+                f"AS Employee_Name,COALESCE((SELECT SUM(TIME_TO_SEC(T.task_hours))/3600 " \
+                f"FROM timesheet T WHERE T.user_id = UD.user_id  and T.task_date " \
+                f"BETWEEN '{start_date}' AND '{end_date}' and T.project_id IN " \
+                f"(select project_id from project_details where billable = 1)), '')  " \
+                f"AS Hours_logged_to_Billable_utilization," \
+                f"COALESCE((SELECT SUM(TIME_TO_SEC(T.task_hours))/3600 " \
+                f"FROM timesheet T WHERE T.user_id = UD.user_id  and T.task_date " \
+                f"BETWEEN '{start_date}' AND '{end_date}' and T.project_id IN " \
+                f"(select project_id from project_details where " \
+                f"utilization = 1 AND billable=0)), '') " \
+                f"AS Hours_logged_to_Non_Billable_utilization," \
+                f"COALESCE((SELECT MIN(T.task_date) FROM timesheet T " \
+                f"WHERE T.user_id = UD.user_id and T.task_date " \
+                f"BETWEEN '{start_date}' AND '{end_date}'), '') AS Date_Range_From," \
+                f"COALESCE((SELECT MAX(T.task_date) FROM timesheet T " \
+                f"WHERE T.user_id = UD.user_id and T.task_date " \
+                f"BETWEEN '{start_date}' AND '{end_date}'), '') as Date_Range_To," \
+                f"COALESCE((SELECT SUM(TIME_TO_SEC(T.calc_allocated_hours)) " \
+                f"FROM timesheet T WHERE T.user_id = UD.user_id and T.status=1 " \
+                f"and T.task_date BETWEEN '{start_date}' AND '{end_date}'), '') " \
+                f"AS Calc_Allocated_Hours FROM user_details UD  " \
+                f"WHERE UD.user_id IN (SELECT user_id FROM user_details) and " \
+                f"UD.active = 1".format(start_date, end_date, start_date,
+                                        end_date, start_date, end_date, start_date, end_date)
 
-    query = f"SELECT concat(UD.first_name,' ' ,UD.last_name) " \
-            f"AS Employee_Name,(SELECT SUM(TIME_TO_SEC(T.task_hours))/3600 " \
-            f"FROM timesheet T WHERE T.user_id = UD.user_id  and T.task_date " \
-            f"BETWEEN '{start_date}' AND '{end_date}' and T.project_id IN " \
-            f"(select project_id from project_details where billable = 1))  " \
-            f"AS Hours_logged_to_Billable_utilization," \
-            f"(SELECT SUM(TIME_TO_SEC(T.task_hours))/3600 " \
-            f"FROM timesheet T WHERE T.user_id = UD.user_id  and T.task_date " \
-            f"BETWEEN '{start_date}' AND '{end_date}' and T.project_id IN " \
-            f"(select project_id from project_details where utilization = 1 AND billable=0)) " \
-            f"AS Hours_logged_to_Non_Billable_utilization," \
-            f"(SELECT concat(MIN(T.task_date),' to ',MAX(T.task_date)) " \
-            f"FROM timesheet T WHERE T.user_id = UD.user_id  and " \
-            f"T.task_date BETWEEN '{start_date}' AND '{end_date}') AS Date_Range," \
-            f"(SELECT SUM(TIME_TO_SEC(T.calc_allocated_hours)) " \
-            f"FROM timesheet T WHERE T.user_id = UD.user_id  " \
-            f"and T.task_date BETWEEN '{start_date}' AND '{end_date}') " \
-            f"AS Calc_Allocated_Hours FROM user_details UD  " \
-            f"WHERE UD.user_id IN (SELECT user_id FROM user_details) and " \
-            f"UD.active = 1".format(start_date, end_date, start_date,
-                                    end_date, start_date, end_date, start_date, end_date)
-
-    timesheet_data = pd.read_sql(query, db_connection)
-    return timesheet_data
+        timesheet_data = pd.read_sql(query, db_connection)
+        return timesheet_data
+    except mysql.connector.Error as err:
+        print(f"Error getting timesheet data: {err}")
+        return None
 
 
-# Function to transfer the data from mysql data to Google Sheets
 # Function to transfer the data to Google Sheets
 def transfer_data_to_google_sheets(timesheet_data):
     """
     Transfer the data from Pandas DataFrame to Google Sheets using configuration from INI file.
     """
-    # Get the path to the service account JSON file from the INI file
-    google_json_path = config.get(GOOGLE_SECTION, 'service_account_json_path')
+    try:
+        # Get the path to the service account JSON file from the INI file
+        google_json_path = config.get(GOOGLE_SECTION, 'service_account_json_path')
 
-    # Authorize access to the Google Sheets API
-    google_sheets_client = pygsheets.authorize(service_file=google_json_path)
+        # Authorize access to the Google Sheets API
+        google_sheets_client = pygsheets.authorize(service_file=google_json_path)
 
-    # Open the spreadsheet and worksheet
-    spreadsheet_name = config.get(SPREADSHEET_SECTION, 'spreadsheet_name')
-    worksheet_name = config.get(SPREADSHEET_SECTION, 'worksheet_name_1')
-    sheet = google_sheets_client.open(spreadsheet_name)
-    wk1 = sheet.worksheet_by_title(worksheet_name)
+        # Open the spreadsheet and worksheet
+        spreadsheet_name = config.get(SPREADSHEET_SECTION, 'spreadsheet_name')
+        worksheet_name = config.get(SPREADSHEET_SECTION, 'worksheet_name_1')
+        sheet = google_sheets_client.open(spreadsheet_name)
+        worksheet = sheet.worksheet_by_title(worksheet_name)
 
-    # Clear any existing data and write the new data
-    wk1.clear()
-    wk1.set_dataframe(timesheet_data, (1, 1), extend=True)
+        # Clear any existing data and write the new data
+        worksheet.clear()
+        worksheet.set_dataframe(timesheet_data, (1, 1), extend=True)
+    except pygsheets.AuthenticationError as err:
+        print(f"Error authenticating with Google Sheets API: {err}")
+    except pygsheets.WorksheetNotFound as err:
+        print(f"Error finding worksheet in Google Sheets: {err}")
 
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
-        print("Please provide exactly two arguments: start date and end date in (YYYY-MM-DD) format.")
+        print("Please provide exactly two arguments:start date and end date in (YYYY-MM-DD) format")
         sys.exit()
 
     START_DATE = sys.argv[1]
